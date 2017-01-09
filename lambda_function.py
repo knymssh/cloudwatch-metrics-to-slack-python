@@ -43,7 +43,6 @@ To encrypt your secrets use the following steps:
 '''
 from __future__ import print_function
 
-import boto3
 import datetime
 import json
 import logging
@@ -53,13 +52,15 @@ import pprint
 from base64 import b64decode
 from urllib2 import Request, urlopen, URLError, HTTPError
 
+import boto3
 
 # The base-64 encoded, encrypted key (CiphertextBlob) stored in the kmsEncryptedHookUrl environment variable
 ENCRYPTED_HOOK_URL = os.environ['kmsEncryptedHookUrl']
 # The Slack channel to send a message to stored in the slackChannel environment variable
 SLACK_CHANNEL = os.environ['slackChannel']
 
-HOOK_URL = "https://" + boto3.client('kms').decrypt(CiphertextBlob=b64decode(ENCRYPTED_HOOK_URL))['Plaintext']
+HOOK_URL = "https://" + boto3.client('kms').decrypt(
+    CiphertextBlob=b64decode(ENCRYPTED_HOOK_URL))['Plaintext']
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -86,72 +87,44 @@ def post_message(text):
     except URLError as e:
         logger.error("Server connection failed: %s", e.reason)
 
-def get_list_metrics(start, end):
-    name_space='AWS/Lambda'
-    metric_name='Invocations'
-    dimensions=[
-        {
-            'Name': 'string',
-            'Value': 'string'
-        }
-    ]
+def get_list_metrics():
     result = []
-    list_metrics = cloud_watch.list_metrics(
-        Namespace=name_space,
-        MetricName=metric_name
-        #Dimensions=dimensions
-    )
-    pp.pprint(list_metrics)
-    for i in range(len(list_metrics['Metrics'])):
-        pp.pprint(list_metrics['Metrics'][i])
-        p_name_space = list_metrics['Metrics'][i]['Namespace']
-        p_metric_name = list_metrics['Metrics'][i]['MetricName']
-        p_dimension_name = ''
-        p_dimension_value = ''
-        logger.info("Dimensions len="+str(len(list_metrics['Metrics'][i]['Dimensions'])))
-        for dimension in list_metrics['Metrics'][i]['Dimensions']:
-            #pp.pprint(dimension)
-            p_dimension_name = dimension['Name']
-            p_dimension_value = dimension['Value']
-        result.append(get_metric_statistics(p_name_space, p_metric_name, p_dimension_name, p_dimension_value, start, end))
-    
-    while 'NextToken' in list_metrics:
-        list_metrics = cloud_watch.list_metrics(
-            Namespace=name_space,
-            MetricName=metric_name,
-            #Dimensions=dimensions,
-            NextToken=list_metrics['NextToken']
-        )
-        pp.pprint(list_metrics)
+    next_token = None
+    while True:
+        if next_token is None:
+            list_metrics = cloud_watch.list_metrics(
+                #Namespace=name_space,
+                #MetricName=metric_name
+                #Dimensions=dimensions
+            )
+        else:
+            list_metrics = cloud_watch.list_metrics(
+                #Namespace=name_space,
+                #MetricName=metric_name,
+                #Dimensions=dimensions,
+                NextToken=list_metrics['NextToken']
+            )
         for i in range(len(list_metrics['Metrics'])):
-            pp.pprint(list_metrics['Metrics'][i])
             p_name_space = list_metrics['Metrics'][i]['Namespace']
             p_metric_name = list_metrics['Metrics'][i]['MetricName']
             p_dimension_name = ''
             p_dimension_value = ''
-            logger.info("Dimensions len="+str(len(list_metrics['Metrics'][i]['Dimensions'])))
             for dimension in list_metrics['Metrics'][i]['Dimensions']:
-                pp.pprint(dimension)
                 p_dimension_name = dimension['Name']
                 p_dimension_value = dimension['Value']
-            result.append(get_metric_statistics(p_name_space, p_metric_name, p_dimension_name, p_dimension_value, start, end))
-    
+            result.append({
+                "Namespace": p_name_space,
+                "Metricname": p_metric_name,
+                "Dimensions": {
+                    "Name": p_dimension_name,
+                    "Value": p_dimension_value
+                }
+            })
+        if 'NextToken' in list_metrics:
+            next_token = list_metrics['NextToken']
+        else:
+            break
     return result
-
-def get_metric_statistics(name_space, metric_name, dimension_name, dimension_value, start, end):
-    return cloud_watch.get_metric_statistics(
-        Namespace=name_space,
-        MetricName=metric_name,
-        Dimensions=[
-            {
-                'Name': dimension_name,
-                'Value': dimension_value
-            }
-        ],
-        StartTime=start,
-        EndTime=end,
-        Period=300,
-        Statistics=['SampleCount', 'Average', 'Sum', 'Minimum', 'Maximum'])
 
 SUPPORT_DIMENTION = {
     'AWS/Lambda': 'FunctionName',
@@ -181,6 +154,14 @@ def get_targets():
         {
             "Namespace": "AWS/Lambda",
             "FunctionName": "cloudwatch-metrics-to-slack"
+        },
+        {
+            "Namespace": "AWS/ApiGateway",
+            "ApiName": "phonecat"
+        },
+        {
+            "Namespace": "AWS/CloudFront",
+            "DistributionId": "E2F78R29BHCFHE"
         }
     ]
     """
@@ -230,7 +211,9 @@ def get_metrics_statistics(targets, start, end):
                     "Average": metric['Datapoints'][0]['Average'] if len(metric['Datapoints']) > 0 else 0,
                     "Sum": metric['Datapoints'][0]['Sum'] if len(metric['Datapoints']) > 0 else 0,
                     "Minimum": metric['Datapoints'][0]['Minimum'] if len(metric['Datapoints']) > 0 else 0,
-                    "Maximum": metric['Datapoints'][0]['Maximum'] if len(metric['Datapoints']) > 0 else 0
+                    "Maximum": metric['Datapoints'][0]['Maximum'] if len(metric['Datapoints']) > 0 else 0,
+                    "Unit": metric['Datapoints'][0]['Unit'] if len(metric['Datapoints']) > 0 else 0,
+                    "Timestamp": metric['Datapoints'][0]['Timestamp'].strftime("%Y/%m/%d %H:%M:%S") if len(metric['Datapoints']) > 0 else 0
                 }
             })
     
@@ -254,7 +237,8 @@ def lambda_handler(event, context):
     end_time = datetime.datetime.utcnow()
     start_time = end_time - datetime.timedelta(seconds=300)
     
-    #metrics = get_list_metrics(start_time, end_time)
+    metrics = get_list_metrics()
+    logger.info("Metrics: "+json.dumps(metrics))
     
     targets = get_targets()
     logger.info("Targets: "+json.dumps(targets))
